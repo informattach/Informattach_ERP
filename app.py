@@ -4,8 +4,8 @@ from database import db
 from pricing_engine import PricingEngine
 
 # Sayfa Konfigürasyonu
-st.set_page_config(page_title="Informattach PIM", layout="wide")
-st.title("🚀 Merkezi Ürün Yönetim Sistemi (PIM)")
+st.set_page_config(page_title="Informattach ERP", layout="wide")
+st.title("🚀 Informattach ERP Sistemi")
 
 def render_sidebar():
     """Navigasyon ve Genel İstatistikler"""
