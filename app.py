@@ -44,7 +44,26 @@ def render_sidebar():
                 except Exception as e:
                     # Muhtemelen aynı ISKU veya ASIN eklenmeye çalışıldı
                     st.error(f"Ekleme Hatası: {e}")
-
+    # Mevcut formun alt kısmına ekle:
+    st.sidebar.divider()
+    st.sidebar.subheader("📥 Easync Veri Aktarımı")
+    uploaded_file = st.sidebar.file_uploader("CSV veya Excel Yükle", type=["csv", "xlsx"])
+    
+    if uploaded_file is not None:
+        if st.sidebar.button("🚀 ERP'ye Dağıt"):
+            with st.spinner("Veriler okunuyor ve 5 katmanlı mimariye dağıtılıyor..."):
+                try:
+                    import pandas as pd # Eğer sayfanın en üstünde yoksa ekle
+                    if uploaded_file.name.endswith('.csv'):
+                        df = pd.read_csv(uploaded_file)
+                    else:
+                        df = pd.read_excel(uploaded_file)
+                        
+                    result = db.import_easync_data(df)
+                    st.sidebar.success(f"İşlem Tamam! Başarılı: {result['success']} | Hatalı Satır: {result['errors']}")
+                    st.rerun() # Tabloyu anında güncellemek için sayfayı yenile
+                except Exception as e:
+                    st.sidebar.error(f"Kritik Dosya Hatası: {e}")
 # --- ANA EKRAN: ÜRÜN PORTFÖYÜ ---
 def render_main_table():
     st.subheader("Ürün Portföyü")
