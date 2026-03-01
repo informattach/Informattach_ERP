@@ -20,7 +20,6 @@ class DatabaseManager:
         self.client: Client = create_client(url, key)
 
     def create_core_product(self, isku: str, base_title: str, asin: str = None, upc: str = None, requires_expiration: bool = False) -> Dict:
-        """Sisteme yeni bir evrensel ürün ve onun temel başlığını ekler."""
         prod_data = {
             "isku": isku, 
             "asin": asin, 
@@ -37,7 +36,6 @@ class DatabaseManager:
             "base_title": base_title
         }).execute()
         
-        # Lojistik tablosunda boş bir kayıt oluştur (ileride güncellenmek üzere)
         self.client.table("product_logistics").insert({
             "product_id": product_id
         }).execute()
@@ -45,7 +43,6 @@ class DatabaseManager:
         return new_prod.data[0]
 
     def get_product_by_isku(self, isku: str) -> Optional[Dict]:
-        """ISKU'ya göre ürünü tüm içerik, lojistik ve medya detaylarıyla getirir."""
         response = self.client.table("core_products").select(
             "*, product_base_content(*), product_logistics(*), product_media(*)"
         ).eq("isku", isku).execute()
@@ -55,7 +52,6 @@ class DatabaseManager:
         return None
 
     def get_all_core_products(self) -> List[Dict]:
-        """Ana ürünleri listeleme ekranı için temel bilgilerle getirir."""
         response = self.client.table("core_products").select(
             "id, isku, asin, product_base_content(base_title), requires_expiration"
         ).execute()
