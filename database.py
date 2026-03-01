@@ -52,8 +52,10 @@ class DatabaseManager:
         return None
 
     def get_all_core_products(self) -> List[Dict]:
+        """Ana ürünleri listeleme ekranı için temel bilgilerle getirir."""
+        # select sorgusuna upc eklendi
         response = self.client.table("core_products").select(
-            "id, isku, asin, product_base_content(base_title), requires_expiration"
+            "id, isku, asin, upc, product_base_content(base_title), requires_expiration"
         ).execute()
         return response.data
 
