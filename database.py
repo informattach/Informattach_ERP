@@ -146,7 +146,8 @@ class DatabaseManager:
 
                 success += 1
             except Exception as e:
-                # Gerçek hayatta buraya log atılır, şimdilik atlıyoruz sistemi durdurmasın.
+                # Hatayı yutmak yerine artık ekranda kırmızı kırmızı gösterecek
+                st.error(f"Satır {index} Hatası: {str(e)}") 
                 errors += 1
                 continue
                 

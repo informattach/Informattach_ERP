@@ -61,7 +61,7 @@ def render_sidebar():
                         
                     result = db.import_easync_data(df)
                     st.sidebar.success(f"İşlem Tamam! Başarılı: {result['success']} | Hatalı Satır: {result['errors']}")
-                    st.rerun() # Tabloyu anında güncellemek için sayfayı yenile
+                    # st.rerun() # Tabloyu anında güncellemek için sayfayı yenile
                 except Exception as e:
                     st.sidebar.error(f"Kritik Dosya Hatası: {e}")
 # --- ANA EKRAN: ÜRÜN PORTFÖYÜ ---
