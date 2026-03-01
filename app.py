@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from database import db
 from pricing_engine import PricingEngine
-
+from ebay_exporter import EbayExporter
 # Sayfa Konfigürasyonu
 st.set_page_config(page_title="Informattach ERP", layout="wide")
 st.title("🚀 Informattach ERP Sistemi")
@@ -17,7 +17,27 @@ def render_sidebar():
     
     st.sidebar.divider()
     st.sidebar.info("Lokasyon: Hollanda | Hedef: İspanya")
-
+    st.sidebar.divider()
+    st.sidebar.subheader("Veri İçe Aktarma")
+    uploaded_file = st.sidebar.file_uploader("Tedarikçi / Ürün Dosyası Yükle", type=["csv", "xlsx"])
+    
+    if uploaded_file is not None:
+        if st.sidebar.button("🚀 Veritabanına Bas"):
+            try:
+                # Dosya tipine göre okuma
+                if uploaded_file.name.endswith('.csv'):
+                    df = pd.read_csv(uploaded_file)
+                else:
+                    df = pd.read_excel(uploaded_file)
+                
+                st.sidebar.success(f"{len(df)} satır okundu! Veritabanı haritalaması bekleniyor.")
+                
+                # İçeriği ana ekranda önizleme
+                st.subheader("Yüklenen Dosya Önizlemesi")
+                st.dataframe(df.head(), use_container_width=True)
+                
+            except Exception as e:
+                st.sidebar.error(f"Dosya okuma hatası: {e}")
 def render_product_table():
     """Ürünleri, Kaynakları ve Satış Fiyatlarını Tek Tabloda Gösterir"""
     st.subheader("Ürün Portföyü")
