@@ -141,17 +141,12 @@ class DatabaseManager:
                     store_cache[target_market_raw] = store.data[0]['id']
                 store_id = store_cache[target_market_raw]
 
-                # --- 4. ÇEKİRDEK ÜRÜN VE İÇERİK ---
+                # --- 4. ÇEKİRDEK ÜRÜN VE İÇERİK ---    
                 product = self.client.table('core_products').select('id').eq('isku', isku).execute()
                 if not product.data:
-                    prod_ins = self.client.table('core_products').insert({'isku': isku, 'asin': source_id}).execute()
+                    clean_asin = source_id if source_id != "" else None
+                    prod_ins = self.client.table('core_products').insert({'isku': isku, 'asin': clean_asin}).execute()
                     product_id = prod_ins.data[0]['id']
-                    
-                    self.client.table('product_base_content').insert({'product_id': product_id, 'base_title': title}).execute()
-                    if media_url:
-                        self.client.table('product_media').insert({'product_id': product_id, 'media_url': media_url, 'is_main': True}).execute()
-                else:
-                    product_id = product.data[0]['id']
 
                 # --- 5. KAVŞAKLAR: SOURCES VE LISTINGS ---
                 source_check = self.client.table('sources').select('id').eq('product_id', product_id).eq('supplier_id', supplier_id).execute()
