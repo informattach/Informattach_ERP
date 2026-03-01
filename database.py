@@ -142,11 +142,15 @@ class DatabaseManager:
                     store_cache[target_market_raw] = res.data[0]['id']
                 store_id = store_cache[target_market_raw]
 
-                # Çekirdek Ürün (Eksik olan else bloğu eklendi)
+                # Çekirdek Ürün
                 if isku not in prod_cache:
-                    res = self.client.table('core_products').insert({'isku': isku, 'asin': clean_asin}).execute()
+                    # Boş ASIN'i zorla göndermek yerine, sadece doluysa pakete koyuyoruz
+                    prod_data = {'isku': isku}
+                    if clean_asin:
+                        prod_data['asin'] = clean_asin
+                        
+                    res = self.client.table('core_products').insert(prod_data).execute()
                     product_id = res.data[0]['id']
-                    prod_cache[isku] = product_id # RAM'i de güncelle
                     
                     self.client.table('product_base_content').insert({'product_id': product_id, 'base_title': title}).execute()
                     if media_url:
