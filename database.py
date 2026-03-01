@@ -59,18 +59,30 @@ class DatabaseManager:
         ).execute()
         return response.data
     def import_easync_data(self, df) -> dict:
-        """Easync DataFrame'ini okur ve 5 tablolu normalize mimariye dağıtır."""
+        """Easync verilerini önbellek (cache) kullanarak çok daha hızlı dağıtır."""
         success = 0
         errors = 0
-        
-        # Pandas NaN değerlerini boş string'e çevir
         df = df.fillna('')
+        total_rows = len(df)
         
+        # --- RAM ÖNBELLEK (CACHE) ---
+        # Veritabanına tekrar tekrar sormamak için ID'leri hafızada tutuyoruz
+        mp_cache = {}
+        supplier_cache = {}
+        store_cache = {}
+        
+        # Arayüz için ilerleme sayacı
+        progress_text = st.empty()
+
         for index, row in df.iterrows():
+            # Kullanıcının sistemin donmadığını görmesi için her 10 satırda bir ekrana bilgi bas
+            if index % 10 == 0 or index == total_rows - 1:
+                progress_text.text(f"🚀 İşleniyor: {index + 1} / {total_rows} satır...")
+
             try:
                 # 1. Temel Değişkenleri Yakala
                 title = str(row.get('Title', 'İsimsiz Ürün'))[:200]
-                source_id = str(row.get('Source Product Id', '')).strip() # ASIN
+                source_id = str(row.get('Source Product Id', '')).strip()
                 isku = str(row.get('Target Variant', '')).strip()
                 if not isku:
                     isku = f"INF-{source_id}" if source_id else f"INF-UNK-{index}"
@@ -83,44 +95,53 @@ class DatabaseManager:
 
                 target_price_raw = str(row.get('Target Price', '0')).replace('$', '').replace(',', '').strip()
                 target_price = float(target_price_raw) if target_price_raw else 0.0
+                
                 target_item_id = str(row.get('Target Product Id', '')).strip()
                 media_url = str(row.get('Target Picture', '')).strip()
 
-                # 2. PAZARYERLERİ (Get or Create)
+                # --- 2. PAZARYERLERİ (Önbellekli) ---
                 s_parts = source_market_raw.split()
                 s_name, s_region = s_parts[0], s_parts[-1] if len(s_parts) > 1 else "US"
-                
+                s_mp_key = f"{s_name}_{s_region}"
+
+                if s_mp_key not in mp_cache:
+                    mp_source = self.client.table('marketplaces').select('id').eq('name', s_name).eq('region', s_region).execute()
+                    if not mp_source.data:
+                        mp_source = self.client.table('marketplaces').insert({'name': s_name, 'region': s_region}).execute()
+                    mp_cache[s_mp_key] = mp_source.data[0]['id']
+                mp_source_id = mp_cache[s_mp_key]
+
                 t_parts = target_market_raw.split()
                 t_name, t_region = t_parts[0], t_parts[-1] if len(t_parts) > 1 else "US"
+                t_mp_key = f"{t_name}_{t_region}"
 
-                # Kaynak Pazaryeri
-                mp_source = self.client.table('marketplaces').select('id').eq('name', s_name).eq('region', s_region).execute()
-                if not mp_source.data:
-                    mp_source = self.client.table('marketplaces').insert({'name': s_name, 'region': s_region}).execute()
-                mp_source_id = mp_source.data[0]['id']
+                if t_mp_key not in mp_cache:
+                    mp_target = self.client.table('marketplaces').select('id').eq('name', t_name).eq('region', t_region).execute()
+                    if not mp_target.data:
+                        mp_target = self.client.table('marketplaces').insert({'name': t_name, 'region': t_region}).execute()
+                    mp_cache[t_mp_key] = mp_target.data[0]['id']
+                mp_target_id = mp_cache[t_mp_key]
 
-                # Hedef Pazaryeri
-                mp_target = self.client.table('marketplaces').select('id').eq('name', t_name).eq('region', t_region).execute()
-                if not mp_target.data:
-                    mp_target = self.client.table('marketplaces').insert({'name': t_name, 'region': t_region}).execute()
-                mp_target_id = mp_target.data[0]['id']
+                # --- 3. TEDARİKÇİ VE MAĞAZA (Önbellekli) ---
+                if source_market_raw not in supplier_cache:
+                    supplier = self.client.table('suppliers').select('id').eq('name', source_market_raw).execute()
+                    if not supplier.data:
+                        supplier = self.client.table('suppliers').insert({
+                            'marketplace_id': mp_source_id, 'supplier_type': 'Marketplace_Account', 'name': source_market_raw
+                        }).execute()
+                    supplier_cache[source_market_raw] = supplier.data[0]['id']
+                supplier_id = supplier_cache[source_market_raw]
 
-                # 3. TEDARİKÇİ VE MAĞAZA (Get or Create)
-                supplier = self.client.table('suppliers').select('id').eq('name', source_market_raw).execute()
-                if not supplier.data:
-                    supplier = self.client.table('suppliers').insert({
-                        'marketplace_id': mp_source_id, 'supplier_type': 'Marketplace_Account', 'name': source_market_raw
-                    }).execute()
-                supplier_id = supplier.data[0]['id']
+                if target_market_raw not in store_cache:
+                    store = self.client.table('stores').select('id').eq('store_name', target_market_raw).execute()
+                    if not store.data:
+                        store = self.client.table('stores').insert({
+                            'marketplace_id': mp_target_id, 'store_name': target_market_raw
+                        }).execute()
+                    store_cache[target_market_raw] = store.data[0]['id']
+                store_id = store_cache[target_market_raw]
 
-                store = self.client.table('stores').select('id').eq('store_name', target_market_raw).execute()
-                if not store.data:
-                    store = self.client.table('stores').insert({
-                        'marketplace_id': mp_target_id, 'store_name': target_market_raw
-                    }).execute()
-                store_id = store.data[0]['id']
-
-                # 4. ÇEKİRDEK ÜRÜN VE İÇERİK (Get or Create)
+                # --- 4. ÇEKİRDEK ÜRÜN VE İÇERİK ---
                 product = self.client.table('core_products').select('id').eq('isku', isku).execute()
                 if not product.data:
                     prod_ins = self.client.table('core_products').insert({'isku': isku, 'asin': source_id}).execute()
@@ -132,15 +153,13 @@ class DatabaseManager:
                 else:
                     product_id = product.data[0]['id']
 
-                # 5. KAVŞAKLAR: SOURCES VE LISTINGS (Upsert mantığı)
-                # Tedarik Ağı (Sources)
+                # --- 5. KAVŞAKLAR: SOURCES VE LISTINGS ---
                 source_check = self.client.table('sources').select('id').eq('product_id', product_id).eq('supplier_id', supplier_id).execute()
                 if not source_check.data:
                     self.client.table('sources').insert({
                         'product_id': product_id, 'supplier_id': supplier_id, 'source_code': source_id, 'base_cost': source_price
                     }).execute()
 
-                # Satış Ağı (Listings)
                 listing_check = self.client.table('listings').select('id').eq('product_id', product_id).eq('store_id', store_id).execute()
                 if not listing_check.data:
                     self.client.table('listings').insert({
@@ -149,10 +168,11 @@ class DatabaseManager:
 
                 success += 1
             except Exception as e:
-                # Hatayı yutmak yerine artık ekranda kırmızı kırmızı gösterecek
-                st.error(f"Satır {index} Hatası: {str(e)}") 
+                st.error(f"Satır {index} Hatası: {str(e)}")
                 errors += 1
                 continue
                 
+        progress_text.empty() # İşlem bitince sayacı sil
         return {"success": success, "errors": errors}
+                
 db = DatabaseManager()
