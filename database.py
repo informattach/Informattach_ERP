@@ -78,8 +78,11 @@ class DatabaseManager:
                 source_market_raw = str(row.get('Source Market', 'Amazon US'))
                 target_market_raw = str(row.get('Target Market', 'eBay US'))
                 
-                source_price = float(row.get('Source Price', 0)) if row.get('Source Price') else 0.0
-                target_price = float(row.get('Target Price', 0)) if row.get('Target Price') else 0.0
+                source_price_raw = str(row.get('Source Price', '0')).replace('$', '').replace(',', '').strip()
+                source_price = float(source_price_raw) if source_price_raw else 0.0
+
+                target_price_raw = str(row.get('Target Price', '0')).replace('$', '').replace(',', '').strip()
+                target_price = float(target_price_raw) if target_price_raw else 0.0
                 target_item_id = str(row.get('Target Product Id', '')).strip()
                 media_url = str(row.get('Target Picture', '')).strip()
 
