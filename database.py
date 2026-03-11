@@ -54,7 +54,7 @@ class DatabaseManager:
 
     def get_product_by_asin(self, asin: str) -> Optional[Dict]:
         response = self.client.table("core_products").select(
-            "*, product_base_content(*), product_logistics(*), product_media(*), sources(*), listings(*)"
+            "*, product_base_content(*), product_logistics(*), product_media(*), sources(*), listings(*), product_documents(*)"
         ).eq("asin", asin).execute()
         
         if response.data:
@@ -65,12 +65,13 @@ class DatabaseManager:
         """Ana ürünleri listeleme ekranı için temel bilgilerle getirir."""
         all_products = []
         offset = 0
-        limit = 1000
+        limit = 1000  # Supabase default max_rows is 1000
         while True:
             response = self.client.table("core_products").select(
-                "id, asin, upc, created_at, product_base_content(base_title, updated_at), requires_expiration, "
-                "sources(base_cost, updated_at), listings(channel_item_id, listed_price, quantity, channel_sku, category_id, shipping_profile_id, return_profile_id, payment_profile_id, updated_at)"
-            ).range(offset, offset + limit - 1).execute()
+                "id, asin, upc, created_at, product_media(media_url), product_base_content(base_title, updated_at), requires_expiration, "
+                "sources(base_cost, supplier_id, updated_at), listings(channel_item_id, listed_price, quantity, channel_sku, category_id, store_id, shipping_profile_id, return_profile_id, payment_profile_id, updated_at), "
+                "product_documents(document_type, document_url)"
+            ).order("created_at", desc=True).range(offset, offset + limit - 1).execute()
             
             data = response.data
             if data is None:
@@ -82,6 +83,27 @@ class DatabaseManager:
             offset += limit
             
         return all_products
+        
+    def get_all_categories(self) -> Dict[str, str]:
+        all_cats = []
+        offset = 0
+        limit = 1000
+        while True:
+            res = self.client.table("marketplace_categories").select("category_id, category_name").range(offset, offset+limit-1).execute()
+            if not res.data: break
+            all_cats.extend(res.data)
+            if len(res.data) < limit: break
+            offset += limit
+        return {c['category_id']: c['category_name'] for c in all_cats}
+
+    def get_all_stores(self) -> Dict[str, str]:
+        res = self.client.table("stores").select("id, store_name").execute()
+        return {s['id']: s['store_name'] for s in res.data} if res.data else {}
+
+    def get_all_suppliers(self) -> Dict[str, str]:
+        res = self.client.table("suppliers").select("id, name").execute()
+        return {s['id']: s['name'] for s in res.data} if res.data else {}
+
     def import_easync_data(self, df) -> dict:
         """Toplu işlem (Bulk Insert) mimarisi ile sıfır ağ gecikmesi."""
         st.info("🚀 Veriler paketleniyor (Bulk İşlem)...")
@@ -139,9 +161,9 @@ class DatabaseManager:
             if not source_id:
                 source_id = f"UNKNOWN-{index}"
                 
-            # Kullanıcının iç SSKU'su (ISKU) A-ASIN formatıdır
-            # Vitrinde (eBay) Target Variant sütunu görünen marka ismidir ama iç sistemdeki kayıtlı ismi A-ASIN'dir
-            true_isku = f"A-{source_id}"
+            # Kullanıcının iç SSKU'su (ISKU) AASIN formatıdır
+            # Vitrinde (eBay) Target Variant sütunu görünen marka ismidir ama iç sistemdeki kayıtlı ismi AASIN'dir
+            true_isku = f"A{source_id}"
             target_variant = str(row.get('Target Variant', '')).strip()
             
             title = str(row.get('Title', 'İsimsiz Ürün'))[:200]
@@ -190,7 +212,7 @@ class DatabaseManager:
             
             marketplace_sku = str(row.get('Target Variant', '')).strip()
             if not marketplace_sku:
-                marketplace_sku = f"A-{source_id}"
+                marketplace_sku = f"A{source_id}"
             
             source_market_raw = str(row.get('Source Market', 'Amazon US'))
             target_market_raw = str(row.get('Target Market', 'eBay US'))
@@ -301,7 +323,8 @@ class DatabaseManager:
 
     def get_unapproved_drafts(self) -> List[Dict]:
         """Taslak (draft) tablosundaki incelenmeyi bekleyen kayıtları getirir."""
-        response = self.client.table("draft").select("*").eq("needs_sync", True).order("created_at", desc=True).limit(500).execute()
+        # Eskiden limit 500'dü, bot tek seferde yüzlerce ASIN toparlayınca arayüz kitlenmiş sanılıyordu. 5000'e çıkarıldı.
+        response = self.client.table("draft").select("*").eq("needs_sync", True).order("created_at", desc=True).limit(5000).execute()
         return response.data if response.data else []
 
     def import_amazon_drafts(self, df) -> Dict:
@@ -315,29 +338,34 @@ class DatabaseManager:
         payloads = []
         for index, row in df.iterrows():
             val_0 = str(row.get(0, ""))
-            if "Example line" in val_0 or "Line number" in val_0:
+            # We must only skip the literal header row, not the products themselves
+            if "Example line" in val_0 or (index == 0 and "Line number" in val_0):
                 continue
                 
             asin = str(row.get(1, "")).strip()
             if not asin or asin.lower() == "nan" or len(asin) < 5:
                 continue
                 
-            # Stok
-            qty_raw = row.get(2)
-            qty = 3 # Kullanıcı talebi: stok default 3 olsun
-            if pd.notna(qty_raw):
-                try:
-                    qty = int(float(qty_raw))
-                except:
-                    pass
-                    
+            # Stok ve Availability (Sütun 6 - Index 6)
+            availability = str(row.get(6, "")).strip() if pd.notna(row.get(6)) else ""
+            
+            qty = 3 # Fırsat avcısından (Deals) gelenler varsayılan 3 stoktur
+            avail_lower = availability.lower()
+            
+            if "currently unavailable" in avail_lower or "out of stock" in avail_lower:
+                qty = 0
+            elif "only" in avail_lower and "left" in avail_lower:
+                match_qty = re.search(r'only\s+(\d+)', avail_lower)
+                if match_qty:
+                    qty = min(int(match_qty.group(1)), 3)
+            elif avail_lower == "0":
+                qty = 0
+            
             # Extra data toparlama
             extra_data = {}
             if pd.notna(row.get(3)): extra_data["Comment"] = str(row.get(3))
             if pd.notna(row.get(4)): extra_data["Priority"] = str(row.get(4))
             if pd.notna(row.get(5)): extra_data["Validation Check"] = str(row.get(5))
-            
-            availability = str(row.get(6, "")) if pd.notna(row.get(6)) else ""
             
             # Fiyat
             price_raw = str(row.get(7, ""))
@@ -360,6 +388,7 @@ class DatabaseManager:
             }
             payloads.append(payload)
             
+        # 1) Draft Table Upsert
         chunk_size = 500
         for i in range(0, len(payloads), chunk_size):
             chunk = payloads[i:i+chunk_size]
@@ -370,6 +399,197 @@ class DatabaseManager:
                 print(f"Draft upsert hatası: {e}")
                 errors += len(chunk)
                 
+        # 2) Live Product Update (Sources & Listings)
+        print("Büyük Amazon datası ana tablolara (sources/listings) entegre ediliyor...")
+        # Get mapping of ASIN -> product_id
+        valid_asins = [p["product_id"] for p in payloads if p["price"] is not None]
+        if not valid_asins:
+            return {"success": success, "errors": errors}
+            
+        prod_res = []
+        for i in range(0, len(valid_asins), chunk_size):
+            chunk = valid_asins[i:i+chunk_size]
+            res = self.client.table("core_products").select("id, asin").in_("asin", chunk).execute()
+            if res.data:
+                prod_res.extend(res.data)
+                
+        asin_to_pid = {p["asin"]: p["id"] for p in prod_res}
+        
+        # Get Supplier ID for Amazon US
+        sup_data = self.client.table("suppliers").select("id").eq("name", "Amazon US").limit(1).execute()
+        supplier_id = sup_data.data[0]["id"] if sup_data.data else None
+        
+        source_updates = []
+        listing_updates = [] # To set needs_sync=True
+        
+        for p in payloads:
+            if p["price"] is None:
+                continue
+            asin = p["product_id"]
+            pid = asin_to_pid.get(asin)
+            if not pid or not supplier_id:
+                continue
+            
+            # Update Sources Table (Base Cost)
+            source_updates.append({
+                "product_id": pid,
+                "supplier_id": supplier_id,
+                "base_cost": p["price"],
+                "source_code": asin
+            })
+            
+            # Queue listing for Push to eBay (Needs Sync)
+            listing_updates.append(pid)
+            
+        if source_updates:
+            for i in range(0, len(source_updates), chunk_size):
+                chunk = source_updates[i:i+chunk_size]
+                self.client.table("sources").upsert(chunk, on_conflict="product_id, supplier_id").execute()
+                print(f"- {len(chunk)} adet ana kaynak fiyati guncellendi.")
+                
+        if listing_updates:
+            # We must fetch the actual listing IDs to update them
+            list_res = []
+            for i in range(0, len(listing_updates), chunk_size):
+                chunk = listing_updates[i:i+chunk_size]
+                res = self.client.table("listings").select("id, product_id").in_("product_id", chunk).execute()
+                if res.data:
+                    list_res.extend(res.data)
+            
+            # Apply Quantity and Needs_Sync
+            actual_listing_updates = []
+            # Make a fast lookup for qty
+            asin_qty_map = {p["product_id"]: int(p["stock_quantity"]) for p in payloads}
+            pid_qty_map = {asin_to_pid[asin]: qty for asin, qty in asin_qty_map.items() if asin in asin_to_pid}
+            
+            for l in list_res:
+                pid = l["product_id"]
+                new_qty = pid_qty_map.get(pid, 0)
+                actual_listing_updates.append({
+                    "id": l["id"],
+                    "quantity": new_qty,
+                    "needs_sync": True
+                })
+                
+            for i in range(0, len(actual_listing_updates), chunk_size):
+                chunk = actual_listing_updates[i:i+chunk_size]
+                self.client.table("listings").upsert(chunk).execute()
+                print(f"- {len(chunk)} adet eBay listelemesi Senkron Kuyruguna eklendi.")
+
         return {"success": success, "errors": errors}
+
+    def purge_amazon_discard_list(self, df):
+        """
+        Parses Amazon's error/discard list (which contains duplicates or inactive ASINs),
+        extracts the ASINs (usually found in the B column / index 1), and completely removes 
+        them from the core_products table to keep the export list pristine.
+        """
+        success = 0
+        errors = 0
+        
+        # In Amazon's error reports, ASIN is typically in the second column (index 1) after 13 rows of headers.
+        # But to be safe if the user uploads a raw list of ASINs, we'll scan the first few columns.
+        # CRITICAL FIX: Amazon's report includes ALL ASINs, but only marks bad ones with "Failed" in the Status column.
+        import pandas as pd
+        asins_to_delete = []
+        for index, row in df.iterrows():
+            row_vals = [str(x).lower() for x in row.values if pd.notna(x)]
+            row_str = " ".join(row_vals)
+            
+            # Sadece satırda 'failed' veya 'error' ibaresi varsa silinecek ASIN arar
+            # (Bu sayede hatasız olan, başarılı eklenen ASIN'leri çöpe atmaz)
+            if "failed" in row_str or "error" in row_str:
+                found_asin = None
+                for col_idx in range(min(5, len(row))):
+                    val = str(row.get(col_idx, "")).strip()
+                    if len(val) == 10 and " " not in val:
+                        found_asin = val
+                        break
+                
+                if found_asin:
+                    asins_to_delete.append(found_asin)
+        
+        # Deduplicate
+        asins_to_delete = list(set(asins_to_delete))
+        
+        # SAFETY MEASURE: Do not allow purging of the entire database by accident
+        if len(asins_to_delete) > 500:
+            raise ValueError(f"CRITICAL SAFETY LOCK: Trying to delete {len(asins_to_delete)} ASINs at once. This looks like you accidentally uploaded the main export list instead of the Amazon Error/Discard list! Deletion cancelled.")
+            
+        # Batch delete from core_products
+        chunk_size = 200
+        for i in range(0, len(asins_to_delete), chunk_size):
+            chunk = asins_to_delete[i:i+chunk_size]
+            try:
+                self.client.table('core_products').delete().in_('asin', chunk).execute()
+                success += len(chunk)
+            except Exception as e:
+                print(f"Purge error: {e}")
+                errors += len(chunk)
+                
+        return {"success": success, "errors": errors, "deleted_asins": asins_to_delete}
+
+    def generate_amazon_export_file(self, output_path):
+        """
+        Gathers all 10-character ASINs from core_products and formats them into
+        the Amazon bulk upload template.
+        """
+        import openpyxl
+        import os
+        
+        asins = []
+        offset = 0
+        chunk = 1000
+        while True:
+            res = self.client.table("core_products").select("asin").not_.is_("asin", "null").range(offset, offset + chunk - 1).execute()
+            data = res.data
+            chunk_asins = [str(d['asin']).strip() for d in data if d.get('asin') and len(str(d['asin']).strip()) == 10]
+            asins.extend(chunk_asins)
+            if len(data) < chunk:
+                break
+            offset += chunk
+            
+        if asins:
+            template_path = os.path.join(os.path.dirname(__file__), "assets", "amazon_template.xlsx")
+            wb = openpyxl.load_workbook(template_path)
+            ws = wb.active
+            
+            for i, a in enumerate(asins, start=1):
+                row_idx = 13 + i
+                ws.cell(row=row_idx, column=1, value=i)
+                ws.cell(row=row_idx, column=2, value=a)
+                
+            wb.save(output_path)
+            print(f"✅ Amazon listesi oluşturuldu: {output_path} ({len(asins)} ASIN)")
+            return True
+        else:
+            print("❌ Geçerli 10 karakterli ASIN bulunamadı!")
+            return False
+
+    def add_product_document(self, product_id: str, document_type: str, document_url: str, listing_id: str = None, language: str = 'en'):
+        """Belirtilen ürüne yeni bir döküman (Örn: SDS) ekler."""
+        if not product_id or not document_type or not document_url:
+            raise ValueError("product_id, document_type ve document_url zorunludur.")
+            
+        data = {
+            "product_id": product_id,
+            "document_type": document_type,
+            "document_url": document_url,
+            "language": language
+        }
+        
+        if listing_id:
+            data["listing_id"] = listing_id
+            
+        return self.client.table("product_documents").insert(data).execute()
+
+    def get_product_documents(self, product_id: str, document_type: str = None) -> List[Dict]:
+        """Belirtilen ürünün belgelerini getirir. İstenirse filtreleme (Örn: 'SDS') uygulanabilir."""
+        query = self.client.table("product_documents").select("*").eq("product_id", product_id)
+        if document_type:
+            query = query.eq("document_type", document_type)
+            
+        res = query.execute()
+        return res.data if res.data else []
 
 db = DatabaseManager()
